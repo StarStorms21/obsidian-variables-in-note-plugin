@@ -1,74 +1,248 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { App, Editor, MarkdownPostProcessorContext, MarkdownView, Modal, Notice, Plugin } from 'obsidian';
+import { DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab } from "./settings";
+import {
+	Decoration,
+	DecorationSet,
+	EditorView,
+	ViewPlugin,
+	ViewUpdate
+} from "@codemirror/view";
 
+import { RangeSetBuilder } from "@codemirror/state";
 // Remember to rename these classes and interfaces!
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
+	commands: string[] = ["%v", "%dv"]
+	valid_command_regex: RegExp = /%(\w+)\((\w+)(?:\s*,\s*(.*))?\)/g;
 
 	async onload() {
 		await this.loadSettings();
+		const valid_variable_syntax = /^[A-Za-z][A-Za-z0-9_-]*$/g;
+		const style_operators = /[=+\-/%]/g; // + - / %
+		const style_commands = /^%\S+/mg; // %dv %v
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		this.registerMarkdownPostProcessor((element, ctx) => {
+			this.processVariables(element, ctx);
 		});
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+		this.registerEditorExtension([
+			this.createRegexHighlighter(/%\w+\([^)]+\)/g, "syn-command-style"),
+			//this.createRegexHighlighter(style_operators, "syn-operator-style")
+		]);
+	}
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
+	processVariables(element: HTMLElement, ctx: MarkdownPostProcessorContext) {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) return;
+
+		const cache = this.app.metadataCache.getFileCache(file);
+		if (!cache?.sections) return;
+
+		const content = this.app.vault.read(file).then((text) => {
+			const variables = this.parseVariables(text);
+			this.renderDisplayVariables(element, variables);
+		});
+	}
+
+	parseVariables(text: string): Record<string, number> {
+		const lines = text.split("\n");
+		const variables: Record<string, number> = {};
+
+		for (const line of lines) {
+			const match = line.match(/%(\w+)\((\w+)(?:\s*,\s*(.*))?\)/);
+			if (!match) continue;
+
+			const command = match[1];
+			const variable = match[2];
+			const args = match[3]
+				? match[3].split(",").map(a => a.trim())
+				: [];
+
+			//console.log("wow! original:" + line);
+			//console.log("wow! com:" + command);
+			//console.log("wow! var:" + variable);
+			if (!command) continue;
+			if (!variable) continue;
+
+			//if (!this.commands.contains(command)) continue; //unknown command
+			//console.log("wow! var:" + variable);
+
+			if (command === "v") {
+				if (!args || args.length != 1) continue;
+
+				const expression = args.at(0);
+				if (!expression) continue;
+
+				const evaluated = this.evaluateExpression(expression, variables);
+				if (evaluated !== null) {
+					variables[variable] = evaluated;
+					console.log("Saved:" + variable + " value:" + evaluated);
+				}
 			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
+		}
+
+		return variables;
+	}
+
+	evaluateExpression(expr: string, vars: Record<string, number>): number | null {
+		try {
+			// Replace variable names with their numeric values
+			const replaced = expr.replace(/\b\w+\b/g, (token) => {
+				if (vars[token] !== undefined) {
+					return vars[token].toString();
+				}
+				return token;
+			});
+
+			// Basic safe arithmetic check
+			if (!/^[0-9+\-*/().\s]+$/.test(replaced)) {
+				return null;
 			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+
+			// Evaluate
+			return Function(`"use strict"; return (${replaced});`)();
+		} catch {
+			return null;
+		}
+	}
+
+	renderDisplayVariables(element: HTMLElement, vars: Record<string, number>) {
+		const walker = document.createTreeWalker(
+			element,
+			NodeFilter.SHOW_TEXT,
+			null
+		);
+
+		const nodes: Text[] = [];
+
+		while (walker.nextNode()) {
+			nodes.push(walker.currentNode as Text);
+		}
+
+		for (const node of nodes) {
+			const text = node.nodeValue;
+			if (!text) continue;
+
+			const match = text.match(/%(\w+)\((\w+)(?:\s*,\s*(.*?))?\)/);
+			if (!match) continue;
+
+			const command = match[1];
+			const variable = match[2];
+			const args = match[3]
+				? match[3].split(",").map(a => a.trim())
+				: [];
+
+			if (!command) continue;
+			if (!variable) continue;
+			if (command == "dv") {
+				node.nodeValue = text.replace(
+					/%dv\((\w+)\)/g,
+					(match, name) => {
+						const value = vars[name];
+						return value === undefined
+							? "%!!UNKNOWN!!%"
+							: String(value);
+					}
+				);
+			}
+		}
+	}
+
+	createRegexHighlighter(
+		regex: RegExp,
+		className: string
+	) {
+		return ViewPlugin.fromClass(
+			class {
+				decorations: DecorationSet;
+
+				constructor(view: EditorView) {
+					this.decorations = this.buildDecorations(view);
+				}
+
+				update(update: ViewUpdate) {
+					if (update.docChanged || update.viewportChanged) {
+						this.decorations = this.buildDecorations(update.view);
+					}
+				}
+
+				buildDecorations(view: EditorView): DecorationSet {
+					const builder = new RangeSetBuilder<Decoration>();
+
+					for (const { from, to } of view.visibleRanges) {
+						const text = view.state.doc.sliceString(from, to);
+
+						regex.lastIndex = 0;
+						let match: RegExpExecArray | null;
+
+						while ((match = regex.exec(text)) !== null) {
+							const start = from + match.index;
+							const end = start + match[0].length;
+
+							builder.add(
+								start,
+								end,
+								Decoration.mark({ class: className })
+							);
+						}
 					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+					return builder.finish();
 				}
-				return false;
+			},
+			{
+				decorations: v => v.decorations
 			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+		);
 	}
+
+	//display
+	createEditorExtension() {
+		return ViewPlugin.fromClass(class {
+			decorations: DecorationSet;
+
+			constructor(view: EditorView) {
+				this.decorations = this.buildDecorations(view);
+			}
+
+			update(update: ViewUpdate) {
+				if (update.docChanged || update.viewportChanged) {
+					this.decorations = this.buildDecorations(update.view);
+				}
+			}
+
+			buildDecorations(view: EditorView) {
+				const builder = new RangeSetBuilder<Decoration>();
+
+				const regex_dv = /%dv\s+\w+/g;
+
+				for (const { from, to } of view.visibleRanges) {
+					const documentText = view.state.doc.sliceString(from, to);
+
+					let match; //the part of the document that actually matches the regex
+					while ((match = regex_dv.exec(documentText)) !== null) {
+						const start = from + match.index;
+						const end = start + match[0].length;
+
+						builder.add(
+							start,
+							end,
+							Decoration.mark({
+								class: "syn-dv-style"
+							})
+						);
+					}
+				}
+
+				return builder.finish();
+			}
+		}, {
+			decorations: v => v.decorations
+		});
+	}
+
+
 
 	onunload() {
 	}
@@ -82,18 +256,3 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}

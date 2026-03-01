@@ -6,3 +6,30 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+.syn-command-style {
+    color: #22b2c5;
+    font-weight: 300;
+}
+
+.syn-var-name-style {
+    color: #ffffff;
+}
+
+.syn-var-error-name-style {
+    color: #963c3cfb;
+}
+
+.syn-var-comp-preview-style {
+    color: #ccccccfb;
+    font-style: italic;
+}
+
+.syn-var-static-style {
+    color: #9dff94fb;
+    font-style: italic;
+}
+
+.syn-operator-style {
+    color: #d4c257fb;
+}
