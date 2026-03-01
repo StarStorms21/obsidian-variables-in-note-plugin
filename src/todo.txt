@@ -1,0 +1,11 @@
+- make working domain level names so variables can be pulled from other file contexts
+- be able to pull all of a file's variables
+- be able to do stuff to strings 
+- looping/itteration/arrays?
+- command to change a variable's value, but somehow make it persist so it doesnt get overriden by
+- document assignments? (so you are able to use it with stuff like commander or buttons)
+- boolean input and evaluation, use for if statements afterwards
+- custom functions %f(name, instructions, in1, in2, ...)
+- %f("statBonus", )
+
+
